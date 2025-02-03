@@ -6,7 +6,6 @@ import * as Path from 'path'
 import { App } from './app'
 import {
   Dispatcher,
-  gitAuthenticationErrorHandler,
   externalEditorErrorHandler,
   openShellErrorHandler,
   mergeConflictHandler,
@@ -71,6 +70,10 @@ import { migrateRendererGUID } from '../lib/get-renderer-guid'
 import { initializeRendererNotificationHandler } from '../lib/notifications/notification-handler'
 import { Grid } from 'react-virtualized'
 import { NotificationsDebugStore } from '../lib/stores/notifications-debug-store'
+import { trampolineServer } from '../lib/trampoline/trampoline-server'
+import { TrampolineCommandIdentifier } from '../lib/trampoline/trampoline-command'
+import { createAskpassTrampolineHandler } from '../lib/trampoline/trampoline-askpass-handler'
+import { createCredentialHelperTrampolineHandler } from '../lib/trampoline/trampoline-credential-helper'
 
 if (__DEV__) {
   installDevGlobals()
@@ -194,20 +197,6 @@ process.on(
   }
 )
 
-// See https://github.com/desktop/desktop/pull/15276 and
-// https://github.com/desktop/desktop/pull/14885. We want to gradually get back
-// to a world where we treat all uncaught exceptions as fatal but as an
-// intermediate step to build confidence we're going to route all uncaught
-// exceptions to our non-fatal bucket.
-if (__RELEASE_CHANNEL__ === 'production') {
-  // See https://github.com/electron/electron/blob/f07b040cb998a6126979cec9d562acbac5a23c4c/lib/renderer/init.ts#L98
-  window.onerror = (_message, _filename, _lineno, _colno, error) => {
-    sendNonFatalException('uncaughtError', error as any)
-    // Keep logging to console during the transition period
-    return false
-  }
-}
-
 /**
  * Chromium won't crash on an unhandled rejection (similar to how it won't crash
  * on an unhandled error). We've taken the approach that unhandled errors should
@@ -235,9 +224,21 @@ const statsStore = new StatsStore(
   new StatsDatabase('StatsDatabase'),
   new UiActivityMonitor()
 )
-const signInStore = new SignInStore()
 
 const accountsStore = new AccountsStore(localStorage, TokenStore)
+
+const signInStore = new SignInStore(accountsStore)
+
+trampolineServer.registerCommandHandler(
+  TrampolineCommandIdentifier.AskPass,
+  createAskpassTrampolineHandler(accountsStore)
+)
+
+trampolineServer.registerCommandHandler(
+  TrampolineCommandIdentifier.CredentialHelper,
+  createCredentialHelperTrampolineHandler(accountsStore)
+)
+
 const repositoriesStore = new RepositoriesStore(
   new RepositoriesDatabase('Database')
 )
@@ -306,7 +307,6 @@ dispatcher.registerErrorHandler(openShellErrorHandler)
 dispatcher.registerErrorHandler(mergeConflictHandler)
 dispatcher.registerErrorHandler(lfsAttributeMismatchHandler)
 dispatcher.registerErrorHandler(insufficientGitHubRepoPermissions)
-dispatcher.registerErrorHandler(gitAuthenticationErrorHandler)
 dispatcher.registerErrorHandler(pushNeedsPullHandler)
 dispatcher.registerErrorHandler(samlReauthRequired)
 dispatcher.registerErrorHandler(backgroundTaskHandler)
@@ -349,7 +349,15 @@ ipcRenderer.on('blur', () => {
 })
 
 ipcRenderer.on('url-action', (_, action) =>
-  dispatcher.dispatchURLAction(action)
+  dispatcher
+    .dispatchURLAction(action)
+    .catch(e => log.error(`URL action ${action.name} failed`, e))
+)
+
+ipcRenderer.on('cli-action', (_, action) =>
+  dispatcher
+    .dispatchCLIAction(action)
+    .catch(e => log.error(`CLI action ${action.kind} failed`, e))
 )
 
 // react-virtualized will use the literal string "grid" as the 'aria-label'

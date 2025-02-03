@@ -111,7 +111,7 @@ export class PullRequestFilesChanged extends React.Component<
   }
 
   private onDiffOptionsOpened = () => {
-    this.props.dispatcher.recordDiffOptionsViewed()
+    this.props.dispatcher.incrementMetric('diffOptionsViewedCount')
   }
 
   /**
@@ -268,6 +268,7 @@ export class PullRequestFilesChanged extends React.Component<
         maximumWidth={fileListWidth.max}
         onResize={this.onFileListResize}
         onReset={this.onFileListSizeReset}
+        description="Pull request file list"
       >
         <FileList
           files={files}
@@ -301,6 +302,7 @@ export class PullRequestFilesChanged extends React.Component<
         readOnly={true}
         hideWhitespaceInDiff={hideWhitespaceInDiff}
         showSideBySideDiff={showSideBySideDiff}
+        showDiffCheckMarks={false}
         onOpenBinaryFile={this.onOpenBinaryFile}
         onChangeImageDiffType={this.onChangeImageDiffType}
         onHideWhitespaceInDiffChanged={this.onHideWhitespaceInDiffChanged}

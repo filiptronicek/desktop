@@ -146,14 +146,13 @@ function packageApp() {
   }
 
   // get notarization deets, unless we're not going to publish this
-  const notarizationCredentials = isPublishableBuild
-    ? getNotarizationCredentials()
-    : undefined
+  const osxNotarize = isPublishableBuild ? getNotarizationOptions() : undefined
+
   if (
     isPublishableBuild &&
     isGitHubActions() &&
     process.platform === 'darwin' &&
-    notarizationCredentials === undefined
+    osxNotarize === undefined
   ) {
     // we can't publish a mac build without these
     throw new Error(
@@ -179,7 +178,7 @@ function packageApp() {
       new RegExp('/\\.git($|/)'),
       new RegExp('/node_modules/\\.bin($|/)'),
     ],
-    appCopyright: 'Copyright © 2023 GitHub, Inc.',
+    appCopyright: `Copyright © ${new Date().getFullYear()} GitHub, Inc.`,
 
     // macOS
     appBundleId: getBundleID(),
@@ -198,7 +197,7 @@ function packageApp() {
       identity: isDevelopmentBuild ? '-' : undefined,
       identityValidation: !isDevelopmentBuild,
     },
-    osxNotarize: notarizationCredentials,
+    osxNotarize,
     protocols: [
       {
         name: getBundleID(),
@@ -233,6 +232,10 @@ function copyEmoji() {
   const emojiImages = path.join(projectRoot, 'gemoji', 'images', 'emoji')
   const emojiImagesDestination = path.join(outRoot, 'emoji')
   removeAndCopy(emojiImages, emojiImagesDestination)
+
+  // Remove unicode-based emoji images (use the unicode emojis instead)
+  const emojiImagesUnicode = path.join(emojiImagesDestination, 'unicode')
+  rmSync(emojiImagesUnicode, { recursive: true, force: true })
 
   const emojiJSON = path.join(projectRoot, 'gemoji', 'db', 'emoji.json')
   const emojiJSONDestination = path.join(outRoot, 'emoji.json')
@@ -293,21 +296,22 @@ function copyDependencies() {
   console.log('  Installing dependencies via yarn…')
   cp.execSync('yarn install', { cwd: outRoot, env: process.env })
 
-  console.log('  Copying desktop-trampoline…')
+  console.log('  Copying desktop-askpass-trampoline…')
+  const trampolineSource = path.resolve(
+    projectRoot,
+    'app/node_modules/desktop-trampoline/build/Release'
+  )
   const desktopTrampolineDir = path.resolve(outRoot, 'desktop-trampoline')
-  const desktopTrampolineFile =
+  const desktopAskpassTrampolineFile =
     process.platform === 'win32'
-      ? 'desktop-trampoline.exe'
-      : 'desktop-trampoline'
+      ? 'desktop-askpass-trampoline.exe'
+      : 'desktop-askpass-trampoline'
+
   rmSync(desktopTrampolineDir, { recursive: true, force: true })
   mkdirSync(desktopTrampolineDir, { recursive: true })
   copySync(
-    path.resolve(
-      projectRoot,
-      'app/node_modules/desktop-trampoline/build/Release',
-      desktopTrampolineFile
-    ),
-    path.resolve(desktopTrampolineDir, desktopTrampolineFile)
+    path.resolve(trampolineSource, desktopAskpassTrampolineFile),
+    path.resolve(desktopTrampolineDir, desktopAskpassTrampolineFile)
   )
 
   // Dev builds for macOS require a SSH wrapper to use SSH_ASKPASS
@@ -330,33 +334,26 @@ function copyDependencies() {
   mkdirSync(gitDir, { recursive: true })
   copySync(path.resolve(projectRoot, 'app/node_modules/dugite/git'), gitDir)
 
-  if (process.platform === 'win32') {
-    console.log('  Cleaning unneeded Git components…')
-    const files = [
-      'Bitbucket.Authentication.dll',
-      'GitHub.Authentication.exe',
-      'Microsoft.Alm.Authentication.dll',
-      'Microsoft.Alm.Git.dll',
-      'Microsoft.IdentityModel.Clients.ActiveDirectory.Platform.dll',
-      'Microsoft.IdentityModel.Clients.ActiveDirectory.dll',
-      'Microsoft.Vsts.Authentication.dll',
-      'git-askpass.exe',
-      'git-credential-manager.exe',
-      'WebView2Loader.dll',
-    ]
+  console.log('  Copying desktop credential helper…')
+  const mingw = getDistArchitecture() === 'x64' ? 'mingw64' : 'clangarm64'
+  const gitCoreDir =
+    process.platform === 'win32'
+      ? path.resolve(outRoot, 'git', mingw, 'libexec', 'git-core')
+      : path.resolve(outRoot, 'git', 'libexec', 'git-core')
 
-    const mingwFolder = getDistArchitecture() === 'x64' ? 'mingw64' : 'mingw32'
-    const gitCoreDir = path.join(gitDir, mingwFolder, 'libexec', 'git-core')
+  const desktopCredentialHelperTrampolineFile =
+    process.platform === 'win32'
+      ? 'desktop-credential-helper-trampoline.exe'
+      : 'desktop-credential-helper-trampoline'
 
-    for (const file of files) {
-      const filePath = path.join(gitCoreDir, file)
-      try {
-        unlinkSync(filePath)
-      } catch (err) {
-        // probably already cleaned up
-      }
-    }
-  }
+  const desktopCredentialHelperFile = `git-credential-desktop${
+    process.platform === 'win32' ? '.exe' : ''
+  }`
+
+  copySync(
+    path.resolve(trampolineSource, desktopCredentialHelperTrampolineFile),
+    path.resolve(gitCoreDir, desktopCredentialHelperFile)
+  )
 
   if (process.platform === 'darwin') {
     console.log('  Copying app-path binary…')
@@ -426,14 +423,14 @@ ${licenseText}`
   rmSync(chooseALicense, { recursive: true, force: true })
 }
 
-function getNotarizationCredentials(): OsxNotarizeOptions | undefined {
-  const appleId = process.env.APPLE_ID
-  const appleIdPassword = process.env.APPLE_ID_PASSWORD
-  if (appleId === undefined || appleIdPassword === undefined) {
-    return undefined
-  }
-  return {
-    appleId,
-    appleIdPassword,
-  }
+function getNotarizationOptions(): OsxNotarizeOptions | undefined {
+  const {
+    APPLE_ID: appleId,
+    APPLE_ID_PASSWORD: appleIdPassword,
+    APPLE_TEAM_ID: teamId,
+  } = process.env
+
+  return appleId && appleIdPassword && teamId
+    ? { tool: 'notarytool', appleId, appleIdPassword, teamId }
+    : undefined
 }

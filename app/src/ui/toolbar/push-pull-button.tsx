@@ -5,10 +5,16 @@ import { Repository } from '../../models/repository'
 import { IAheadBehind } from '../../models/branch'
 import { TipState } from '../../models/tip'
 import { FetchType } from '../../models/fetch'
+import { Resizable } from '../resizable'
 
 import { Dispatcher } from '../dispatcher'
-import { Octicon, syncClockwise } from '../octicons'
-import * as OcticonSymbol from '../octicons/octicons.generated'
+import {
+  Octicon,
+  OcticonSymbol,
+  OcticonSymbolVariant,
+  syncClockwise,
+} from '../octicons'
+import * as octicons from '../octicons/octicons.generated'
 import { RelativeTime } from '../relative-time'
 
 import { ToolbarButton, ToolbarButtonStyle } from './button'
@@ -19,10 +25,11 @@ import {
   ToolbarDropdown,
   ToolbarDropdownStyle,
 } from './dropdown'
-import { FoldoutType } from '../../lib/app-state'
+import { FoldoutType, IConstrainedValue } from '../../lib/app-state'
 import { ForcePushBranchState } from '../../lib/rebase'
 import { PushPullButtonDropDown } from './push-pull-button-dropdown'
 import { AriaLiveContainer } from '../accessibility/aria-live-container'
+import { enableResizingToolbarButtons } from '../../lib/feature-flag'
 
 export const DropdownItemClassName = 'push-pull-dropdown-item'
 
@@ -90,6 +97,9 @@ interface IPushPullButtonProps {
    */
   readonly enableFocusTrap: boolean
 
+  /** The width of the resizable push/pull button, as derived from AppState. */
+  readonly pushPullButtonWidth: IConstrainedValue
+
   /**
    * An event handler for when the drop down is opened, or closed, by a pointer
    * event or by pressing the space or enter key while focused.
@@ -115,7 +125,7 @@ export type DropdownItem = {
   readonly title: string
   readonly description: string | JSX.Element
   readonly action: () => void
-  readonly icon: OcticonSymbol.OcticonSymbolType
+  readonly icon: OcticonSymbol
 }
 
 function renderAheadBehind(aheadBehind: IAheadBehind, numTagsToPush: number) {
@@ -129,7 +139,7 @@ function renderAheadBehind(aheadBehind: IAheadBehind, numTagsToPush: number) {
     content.push(
       <span key="ahead">
         {ahead + numTagsToPush}
-        <Octicon symbol={OcticonSymbol.arrowUp} />
+        <Octicon symbol={octicons.arrowUp} />
       </span>
     )
   }
@@ -138,7 +148,7 @@ function renderAheadBehind(aheadBehind: IAheadBehind, numTagsToPush: number) {
     content.push(
       <span key="behind">
         {behind}
-        <Octicon symbol={OcticonSymbol.arrowDown} />
+        <Octicon symbol={octicons.arrowDown} />
       </span>
     )
   }
@@ -162,15 +172,15 @@ function renderLastFetched(lastFetched: Date | null): JSX.Element | string {
  * This represents the "double arrow" icon used to show a force-push, and is a
  * less complicated icon than the generated Octicon from the `octicons` package.
  */
-export const forcePushIcon: OcticonSymbol.OcticonSymbolType = {
+export const forcePushIcon: OcticonSymbolVariant = {
   w: 10,
   h: 16,
-  d:
+  p: [
     'M0 6a.75.75 0 0 0 .974.714L4.469 3.22a.75.75 0 0 1 1.06 0l3.478 3.478a.75.75 ' +
-    '0 0 0 .772-1.228L5.53 1.22a.75.75 0 0 0-1.06 0L.22 5.47A.75.75 0 0 0 0 6zm0 ' +
-    '3a.75.75 0 0 0 1.28.53l2.97-2.97V14a.75.75 0 1 0 1.5 0V6.56l2.97 2.97a.75.75 ' +
-    '0 0 0 1.06-1.06L5.53 4.22a.75.75 0 0 0-1.06 0L.22 8.47A.75.75 0 0 0 0 9z',
-  fr: 'evenodd',
+      '0 0 0 .772-1.228L5.53 1.22a.75.75 0 0 0-1.06 0L.22 5.47A.75.75 0 0 0 0 6zm0 ' +
+      '3a.75.75 0 0 0 1.28.53l2.97-2.97V14a.75.75 0 1 0 1.5 0V6.56l2.97 2.97a.75.75 ' +
+      '0 0 0 1.06-1.06L5.53 4.22a.75.75 0 0 0-1.06 0L.22 8.47A.75.75 0 0 0 0 9z',
+  ],
 }
 
 /**
@@ -265,9 +275,78 @@ export class PushPullButton extends React.Component<
     this.props.dispatcher.push(this.props.repository)
   }
 
+  /**
+   * The dropdown focus trap has logic to set the document.ActiveElement to the
+   * html element (in this case the dropdown button) that was clicked to
+   * activate the focus trap. It also has a returnFocusOnDeactivate prop that is
+   * true by default, but can be set to false to prevent this behavior.
+   *
+   * In the case of force push that opens a confirm dialog, we want to set the
+   * focus to the aria live container and therefore we set
+   * returnFocusOnDeactivate to false. We also provided the onDeactivate
+   * callback of the focus trap to set that focus. See more details in
+   * setScreenReaderStateMessageFocus()
+   *
+   * @returns true - (default behavior) if not force push, or if force and confirmation is off
+   * @returns false -if force push and confirmation is on, so we can manage focus ourselves
+   * */
+  private returnFocusOnDeactivate = () => {
+    const isForcePushOptionAvailable =
+      this.props.forcePushBranchState !== ForcePushBranchState.NotAvailable
+
+    return (
+      !isForcePushOptionAvailable || !this.props.askForConfirmationOnForcePush
+    )
+  }
+
+  /**
+   * In the case of force push that opens a confirm dialog, we want to set the
+   * focus to the aria live container and we do so on the onDeactivate callback
+   * of the focus trap to set that focus. Additionally, we set
+   * returnFocusOnDeactivate to false to prevent the dropdowns focus traps
+   * default focus management.  See more details in
+   * setScreenReaderStateMessageFocus()*/
+  private onDropdownFocusTrapDeactivate = () => {
+    if (this.returnFocusOnDeactivate()) {
+      return
+    }
+
+    this.setScreenReaderStateMessageFocus()
+  }
+
+  /**
+   * This is a hack to get the screen reader to read the message after the force
+   * push confirm dialog closes.
+   *
+   * Problem: The dialog component sets the focus back to what ever was in the
+   * `document.ActiveElement` when the dialog was opened. However the active
+   * element is the force push button that is replaced with the fetch button.
+   * Thus, the force push element is no longer present when the dialog closes
+   * and the focus defaults to the document body. This means the sr message is
+   * not read.
+   *
+   * Solution: Set the `document.ActiveElement` to an element containing the sr
+   * element before opening the dialog so that it returns the focus to an
+   * element containing the sr. You can do this by calling the `focus` element
+   * of a tab focusable element hence adding the tab index.
+   *
+   * Other notes: If I set the focus to the sr element directly, it causes the
+   * message to be read twice.
+   */
+  private setScreenReaderStateMessageFocus() {
+    const srElement = document.getElementById('push-pull-button-state')
+    if (srElement) {
+      srElement.tabIndex = -1
+      srElement.focus()
+    }
+  }
+
   private forcePushWithLease = () => {
     this.closeDropdown()
+
+    this.setScreenReaderStateMessageFocus()
     this.props.dispatcher.confirmOrForcePush(this.props.repository)
+
     this.setState({ actionInProgress: 'force push' })
   }
 
@@ -278,10 +357,29 @@ export class PushPullButton extends React.Component<
 
   private fetch = () => {
     this.closeDropdown()
+
     this.props.dispatcher.fetch(
       this.props.repository,
       FetchType.UserInitiatedTask
     )
+  }
+
+  /**
+   * Handler called when the width of the push/pull button has changed
+   * through an explicit resize event to the given width.
+   *
+   * @param width The new width of resizable button.
+   */
+  private onResize = (width: number) => {
+    this.props.dispatcher.setPushPullButtonWidth(width)
+  }
+
+  /**
+   * Handler called when the resizable push/pull button has been
+   * asked to restore its original width.
+   */
+  private onReset = () => {
+    this.props.dispatcher.resetPushPullButtonWidth()
   }
 
   private getDropdownContentRenderer(
@@ -303,10 +401,32 @@ export class PushPullButton extends React.Component<
   }
 
   public render() {
+    if (!enableResizingToolbarButtons()) {
+      return (
+        <>
+          {this.renderButton()}
+          <span id="push-pull-button-state">
+            <AriaLiveContainer message={this.state.screenReaderStateMessage} />
+          </span>
+        </>
+      )
+    }
+
     return (
       <>
-        {this.renderButton()}
-        <AriaLiveContainer message={this.state.screenReaderStateMessage} />
+        <Resizable
+          width={this.props.pushPullButtonWidth.value}
+          onReset={this.onReset}
+          onResize={this.onResize}
+          maximumWidth={this.props.pushPullButtonWidth.max}
+          minimumWidth={this.props.pushPullButtonWidth.min}
+          description="Push pull button"
+        >
+          {this.renderButton()}
+          <span id="push-pull-button-state">
+            <AriaLiveContainer message={this.state.screenReaderStateMessage} />
+          </span>
+        </Resizable>
       </>
     )
   }
@@ -410,7 +530,7 @@ export class PushPullButton extends React.Component<
         title="Publish repository"
         description="Publish this repository to GitHub"
         className="push-pull-button"
-        icon={OcticonSymbol.upload}
+        icon={octicons.upload}
         style={ToolbarButtonStyle.Subtitle}
         onClick={onClick}
       />
@@ -422,8 +542,8 @@ export class PushPullButton extends React.Component<
       <ToolbarButton
         {...this.defaultButtonProps()}
         title="Publish branch"
-        description="Cannot publish unborn HEAD"
-        icon={OcticonSymbol.upload}
+        description="Cannot publish: no commits"
+        icon={octicons.upload}
         disabled={true}
       />
     )
@@ -439,7 +559,7 @@ export class PushPullButton extends React.Component<
         {...this.defaultButtonProps()}
         title="Publish branch"
         description={description}
-        icon={OcticonSymbol.upload}
+        icon={octicons.upload}
         disabled={true}
       />
     )
@@ -467,7 +587,7 @@ export class PushPullButton extends React.Component<
         {...this.defaultDropdownProps()}
         title="Publish branch"
         description={description}
-        icon={OcticonSymbol.upload}
+        icon={octicons.upload}
         onClick={onClick}
         className={className}
         dropdownContentRenderer={this.getDropdownContentRenderer([
@@ -518,11 +638,13 @@ export class PushPullButton extends React.Component<
         {...this.defaultDropdownProps()}
         title={title}
         description={renderLastFetched(lastFetched)}
-        icon={OcticonSymbol.arrowDown}
+        icon={octicons.arrowDown}
         onClick={onClick}
         dropdownContentRenderer={this.getDropdownContentRenderer(
           dropdownItemTypes
         )}
+        returnFocusOnDeactivate={this.returnFocusOnDeactivate()}
+        onDropdownFocusTrapDeactivate={this.onDropdownFocusTrapDeactivate}
       >
         {renderAheadBehind(aheadBehind, numTagsToPush)}
       </ToolbarDropdown>
@@ -541,7 +663,7 @@ export class PushPullButton extends React.Component<
         {...this.defaultDropdownProps()}
         title={`Push ${remoteName}`}
         description={renderLastFetched(lastFetched)}
-        icon={OcticonSymbol.arrowUp}
+        icon={octicons.arrowUp}
         onClick={onClick}
         dropdownContentRenderer={this.getDropdownContentRenderer([
           DropdownItemType.Fetch,
