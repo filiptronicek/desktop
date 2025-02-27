@@ -14,7 +14,10 @@ import {
   findLastSelectableRow,
 } from './section-list-selection'
 import { createUniqueId, releaseUniqueId } from '../../lib/id-pool'
-import { ListItemInsertionOverlay } from './list-item-insertion-overlay'
+import {
+  InsertionFeedbackType,
+  ListItemInsertionOverlay,
+} from './list-item-insertion-overlay'
 import { DragData, DragType } from '../../../models/drag-drop'
 import memoizeOne from 'memoize-one'
 import {
@@ -68,9 +71,6 @@ interface ISectionListProps {
    * ommitted, it's assumed the section does NOT have a header row.
    */
   readonly sectionHasHeader?: (section: number) => boolean
-
-  /** Aria label for a section in the list. */
-  readonly getSectionAriaLabel?: (section: number) => string | undefined
 
   /**
    * The total number of rows in the list. This is used for
@@ -135,6 +135,24 @@ interface ISectionListProps {
   readonly onRowDoubleClick?: (
     indexPath: RowIndexPath,
     source: IMouseClickSource
+  ) => void
+
+  /** This function will be called when a row obtains focus, no matter how */
+  readonly onRowFocus?: (
+    indexPath: RowIndexPath,
+    source: React.FocusEvent<HTMLDivElement>
+  ) => void
+
+  /** This function will be called only when a row obtains focus via keyboard */
+  readonly onRowKeyboardFocus?: (
+    indexPath: RowIndexPath,
+    e: React.KeyboardEvent<any>
+  ) => void
+
+  /** This function will be called when a row loses focus */
+  readonly onRowBlur?: (
+    indexPath: RowIndexPath,
+    source: React.FocusEvent<HTMLDivElement>
   ) => void
 
   /**
@@ -288,6 +306,15 @@ interface ISectionListProps {
 
   /** The aria-label attribute for the list component. */
   readonly ariaLabel?: string
+
+  /**
+   * Optional callback for providing an aria label for screen readers for each
+   * row.
+   *
+   * Note: you may need to apply an aria-hidden attribute to any child text
+   * elements for this to take precedence.
+   */
+  readonly getRowAriaLabel?: (indexPath: RowIndexPath) => string | undefined
 }
 
 interface ISectionListState {
@@ -724,6 +751,11 @@ export class SectionList extends React.Component<
     // focused list item if it scrolls back into view.
     if (!focusWithin) {
       this.focusRow = InvalidRowIndexPath
+    } else if (this.props.selectedRows.length === 0) {
+      const firstSelectableRowIndexPath = this.getFirstSelectableRowIndexPath()
+      if (firstSelectableRowIndexPath !== null) {
+        this.moveSelectionTo(firstSelectableRowIndexPath, { kind: 'focus' })
+      }
     }
   }
 
@@ -749,6 +781,14 @@ export class SectionList extends React.Component<
     e: React.FocusEvent<HTMLDivElement>
   ) => {
     this.focusRow = index
+    this.props.onRowFocus?.(index, e)
+  }
+
+  private onRowKeyboardFocus = (
+    index: RowIndexPath,
+    e: React.KeyboardEvent<HTMLDivElement>
+  ) => {
+    this.props.onRowKeyboardFocus?.(index, e)
   }
 
   private onRowBlur = (
@@ -758,6 +798,7 @@ export class SectionList extends React.Component<
     if (rowIndexPathEquals(this.focusRow, index)) {
       this.focusRow = InvalidRowIndexPath
     }
+    this.props.onRowBlur?.(index, e)
   }
 
   private onRowContextMenu = (
@@ -783,15 +824,36 @@ export class SectionList extends React.Component<
     return this.props.canSelectRow ? this.props.canSelectRow(rowIndex) : true
   }
 
+  private getFirstSelectableRowIndexPath(): RowIndexPath | null {
+    const { rowCount } = this.props
+
+    for (let section = 0; section < rowCount.length; section++) {
+      const rowCountInSection = rowCount[section]
+      for (let row = 0; row < rowCountInSection; row++) {
+        const indexPath = { section, row }
+        if (this.canSelectRow(indexPath)) {
+          return indexPath
+        }
+      }
+    }
+
+    return null
+  }
+
   private addSelection(direction: SelectionDirection, source: SelectionSource) {
     if (this.props.selectedRows.length === 0) {
       return this.moveSelection(direction, source)
     }
 
     const lastSelection =
-      this.props.selectedRows[this.props.selectedRows.length - 1]
+      direction === 'down'
+        ? this.props.selectedRows[this.props.selectedRows.length - 1]
+        : this.props.selectedRows[0]
 
-    const selectionOrigin = this.props.selectedRows[0]
+    const selectionOrigin =
+      direction === 'down'
+        ? this.props.selectedRows[0]
+        : this.props.selectedRows.at(-1)
 
     const newRow = findNextSelectableRow(
       this.props.rowCount,
@@ -799,7 +861,7 @@ export class SectionList extends React.Component<
       this.canSelectRow
     )
 
-    if (newRow != null) {
+    if (newRow != null && selectionOrigin !== undefined) {
       if (this.props.onSelectionChanged) {
         const newSelection = createSelectionBetween(
           selectionOrigin,
@@ -1083,8 +1145,12 @@ export class SectionList extends React.Component<
     return customClasses.length === 0 ? undefined : customClasses.join(' ')
   }
 
-  private getRowRenderer = (section: number) => {
+  private getRowRenderer = (
+    section: number,
+    firstSelectableRowIndexPath: RowIndexPath | null
+  ) => {
     return (params: IRowRendererParams) => {
+      const { selectedRows } = this.props
       const indexPath: RowIndexPath = {
         section: section,
         row: params.rowIndex,
@@ -1092,16 +1158,17 @@ export class SectionList extends React.Component<
 
       const selectable = this.canSelectRow(indexPath)
       const selected =
-        this.props.selectedRows.findIndex(r =>
-          rowIndexPathEquals(r, indexPath)
-        ) !== -1
+        selectedRows.findIndex(r => rowIndexPathEquals(r, indexPath)) !== -1
       const customClasses = this.getCustomRowClassNames(indexPath)
 
       // An unselectable row shouldn't be focusable
       let tabIndex: number | undefined = undefined
       if (selectable) {
         tabIndex =
-          selected && rowIndexPathEquals(this.props.selectedRows[0], indexPath)
+          (selected && rowIndexPathEquals(selectedRows[0], indexPath)) ||
+          (selectedRows.length === 0 &&
+            firstSelectableRowIndexPath !== null &&
+            rowIndexPathEquals(firstSelectableRowIndexPath, indexPath))
             ? 0
             : -1
       }
@@ -1116,6 +1183,7 @@ export class SectionList extends React.Component<
             onDropDataInsertion={this.props.onDropDataInsertion}
             itemIndex={indexPath}
             dragType={this.props.insertionDragType}
+            forcedFeedbackType={InsertionFeedbackType.None}
           >
             {row}
           </ListItemInsertionOverlay>
@@ -1125,21 +1193,29 @@ export class SectionList extends React.Component<
 
       const id = this.getRowId(indexPath)
 
+      const ariaLabel =
+        this.props.getRowAriaLabel !== undefined
+          ? this.props.getRowAriaLabel(indexPath)
+          : undefined
+
       return (
         <ListRow
           key={params.key}
           id={id}
+          ariaLabel={ariaLabel}
           sectionHasHeader={sectionHasHeader}
           onRowRef={this.onRowRef}
           rowCount={this.props.rowCount[indexPath.section]}
           rowIndex={indexPath}
           selected={selected}
+          inKeyboardInsertionMode={false}
           onRowClick={this.onRowClick}
           onRowDoubleClick={this.onRowDoubleClick}
           onRowKeyDown={this.onRowKeyDown}
           onRowMouseDown={this.onRowMouseDown}
           onRowMouseUp={this.onRowMouseUp}
           onRowFocus={this.onRowFocus}
+          onRowKeyboardFocus={this.onRowKeyboardFocus}
           onRowBlur={this.onRowBlur}
           onContextMenu={this.onRowContextMenu}
           style={params.style}
@@ -1171,13 +1247,7 @@ export class SectionList extends React.Component<
     }
 
     return (
-      <div
-        ref={this.onRef}
-        id={this.props.id}
-        className="list"
-        aria-labelledby={this.props.ariaLabelledBy}
-        aria-label={this.props.ariaLabel}
-      >
+      <div ref={this.onRef} id={this.props.id} className="list">
         {content}
       </div>
     )
@@ -1264,7 +1334,9 @@ export class SectionList extends React.Component<
           ref={this.getOnGridRef(section)}
           autoContainerWidth={true}
           containerRole="presentation"
-          aria-label={this.props.getSectionAriaLabel?.(section)}
+          aria-multiselectable={
+            this.props.selectionMode !== 'single' ? true : undefined
+          }
           // Set the width and columnWidth to a hardcoded large value to prevent
           columnWidth={10000}
           width={10000}
@@ -1272,11 +1344,16 @@ export class SectionList extends React.Component<
           columnCount={1}
           rowCount={this.props.rowCount[section]}
           rowHeight={this.getRowHeight(section)}
-          cellRenderer={this.getRowRenderer(section)}
+          cellRenderer={this.getRowRenderer(
+            section,
+            this.getFirstSelectableRowIndexPath()
+          )}
           scrollTop={relativeScrollTop}
           overscanRowCount={4}
           style={{ ...params.style, width: '100%' }}
           tabIndex={-1}
+          aria-labelledby={this.props.ariaLabelledBy}
+          aria-label={this.props.ariaLabel}
         />
       )
     }
@@ -1308,7 +1385,7 @@ export class SectionList extends React.Component<
   private get totalHeight() {
     return this.props.rowCount.reduce((total, _count, section) => {
       return total + this.getSectionHeight(section)
-    })
+    }, 0)
   }
 
   private sectionHeight = ({ index }: Index) => {
@@ -1331,9 +1408,9 @@ export class SectionList extends React.Component<
       rowIndexPathEquals(firstSelectedRow, InvalidRowIndexPath)
     ) {
       sendNonFatalException(
-        'The selected rows of the List.tsx contained a negative number.',
+        'invalidListSelection',
         new Error(
-          `Invalid selected rows that contained a negative number passed to List component. This will cause keyboard navigation and focus problems.`
+          `Invalid selected rows that contained a negative number passed to SectionList component. This will cause keyboard navigation and focus problems.`
         )
       )
     }
@@ -1356,7 +1433,7 @@ export class SectionList extends React.Component<
       >
         <Grid
           id={this.props.accessibleListId}
-          role="listbox"
+          role="presentation"
           ref={this.onRootGridRef}
           autoContainerWidth={true}
           containerRole="presentation"
@@ -1419,14 +1496,17 @@ export class SectionList extends React.Component<
 
     this.lastScroll = 'fake'
 
-    // TODO: calculate scrollTop of the right grid(s)?
-
     if (this.rootGrid) {
       const element = ReactDOM.findDOMNode(this.rootGrid)
       if (element instanceof Element) {
         element.scrollTop = e.currentTarget.scrollTop
       }
     }
+
+    this.setState({ scrollTop: e.currentTarget.scrollTop })
+
+    // Make sure the root grid re-renders its children
+    this.rootGrid?.recomputeGridSize()
   }
 
   private onRowMouseDown = (

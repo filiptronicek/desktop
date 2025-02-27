@@ -24,6 +24,12 @@ interface IListRowProps {
   /** whether the row should be rendered as selected */
   readonly selected?: boolean
 
+  /** whether the row should be rendered as selected for keyboard insertion*/
+  readonly selectedForKeyboardInsertion?: boolean
+
+  /** whether the list to which this row belongs is in keyboard insertion mode */
+  readonly inKeyboardInsertionMode: boolean
+
   /** callback to fire when the DOM element is created */
   readonly onRowRef?: (
     index: RowIndexPath,
@@ -50,6 +56,14 @@ interface IListRowProps {
 
   /** callback to fire when the row receives a keyboard event */
   readonly onRowKeyDown: (
+    index: RowIndexPath,
+    e: React.KeyboardEvent<any>
+  ) => void
+
+  /** called when the row (or any of its descendants) receives focus due to a
+   * keyboard event
+   */
+  readonly onRowKeyboardFocus?: (
     index: RowIndexPath,
     e: React.KeyboardEvent<any>
   ) => void
@@ -82,9 +96,35 @@ interface IListRowProps {
 
   /** a custom css class to apply to the row */
   readonly className?: string
+
+  /**
+   * aria label value for screen readers
+   *
+   * Note: you may need to apply an aria-hidden attribute to any child text
+   * elements for this to take precedence.
+   */
+  readonly ariaLabel?: string
+
+  /** Optional role setting.
+   *
+   * By default our lists use the `listbox` role paired with list items of role
+   * 'option' because that have selection capability. In that case, a
+   * screenreader will only browse to the selected list option. If the list is
+   * meant to be informational as opposed for selection, we should use `list`
+   * with `listitem` as the role for the items so browse mode can navigate them.
+   */
+  readonly role?: 'option' | 'listitem' | 'presentation'
 }
 
 export class ListRow extends React.Component<IListRowProps, {}> {
+  // Since there is no way of knowing when a row has been focused via keyboard
+  // or mouse interaction, we will use the keyDown and keyUp events to track
+  // what the user did to get the row in a focused state.
+  // The heuristic is that we should receive a focus event followed by a keyUp
+  // event, with no keyDown events (since that keyDown event should've happened
+  // in the component that previously had focus).
+  private keyboardFocusDetectionState: 'ready' | 'failed' | 'focused' = 'ready'
+
   private onRef = (elem: HTMLDivElement | null) => {
     this.props.onRowRef?.(this.props.rowIndex, elem)
   }
@@ -107,13 +147,25 @@ export class ListRow extends React.Component<IListRowProps, {}> {
 
   private onRowKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     this.props.onRowKeyDown(this.props.rowIndex, e)
+    this.keyboardFocusDetectionState = 'failed'
+  }
+
+  private onRowKeyUp = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (this.keyboardFocusDetectionState === 'focused') {
+      this.props.onRowKeyboardFocus?.(this.props.rowIndex, e)
+    }
+    this.keyboardFocusDetectionState = 'ready'
   }
 
   private onFocus = (e: React.FocusEvent<HTMLDivElement>) => {
     this.props.onRowFocus?.(this.props.rowIndex, e)
+    if (this.keyboardFocusDetectionState === 'ready') {
+      this.keyboardFocusDetectionState = 'focused'
+    }
   }
 
   private onBlur = (e: React.FocusEvent<HTMLDivElement>) => {
+    this.keyboardFocusDetectionState = 'ready'
     this.props.onRowBlur?.(this.props.rowIndex, e)
   }
 
@@ -124,7 +176,9 @@ export class ListRow extends React.Component<IListRowProps, {}> {
   public render() {
     const {
       selected,
+      selectedForKeyboardInsertion,
       selectable,
+      inKeyboardInsertionMode,
       className,
       style,
       rowCount,
@@ -133,11 +187,16 @@ export class ListRow extends React.Component<IListRowProps, {}> {
       rowIndex,
       children,
       sectionHasHeader,
+      role,
     } = this.props
     const rowClassName = classNames(
       'list-item',
-      { selected },
-      { 'not-selectable': selectable === false },
+      {
+        selected,
+        'in-keyboard-insertion-mode': inKeyboardInsertionMode,
+        'selected-for-keyboard-insertion': selectedForKeyboardInsertion,
+        'not-selectable': selectable === false,
+      },
       className
     )
     // react-virtualized gives us an explicit pixel width for rows, but that
@@ -165,11 +224,14 @@ export class ListRow extends React.Component<IListRowProps, {}> {
       <div
         id={id}
         role={
-          sectionHasHeader && rowIndex.row === 0 ? 'presentation' : 'option'
+          sectionHasHeader && rowIndex.row === 0
+            ? 'presentation'
+            : role ?? 'option'
         }
         aria-setsize={ariaSetSize}
         aria-posinset={ariaPosInSet}
         aria-selected={selectable ? selected : undefined}
+        aria-label={this.props.ariaLabel}
         className={rowClassName}
         tabIndex={tabIndex}
         ref={this.onRef}
@@ -178,12 +240,24 @@ export class ListRow extends React.Component<IListRowProps, {}> {
         onClick={this.onRowClick}
         onDoubleClick={this.onRowDoubleClick}
         onKeyDown={this.onRowKeyDown}
+        onKeyUp={this.onRowKeyUp}
         style={fullWidthStyle}
         onFocus={this.onFocus}
         onBlur={this.onBlur}
         onContextMenu={this.onContextMenu}
       >
-        {children}
+        {
+          // HACK: When we have an ariaLabel we need to make sure that the
+          // child elements are not exposed to the screen reader, otherwise
+          // VoiceOver will decide to read the children elements instead of the
+          // ariaLabel.
+          <div
+            className="list-item-content-wrapper"
+            aria-hidden={this.props.ariaLabel !== undefined}
+          >
+            {children}
+          </div>
+        }
       </div>
     )
   }

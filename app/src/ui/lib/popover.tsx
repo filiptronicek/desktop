@@ -17,6 +17,7 @@ import {
   size,
 } from '@floating-ui/core'
 import { assertNever } from '../../lib/fatal-error'
+import { isMacOSSequoia, isMacOSSonoma, isMacOSVentura } from '../../lib/get-os'
 
 /**
  * Position of the popover relative to its anchor element. It's composed by 2
@@ -54,15 +55,19 @@ export enum PopoverDecoration {
 
 const TipSize = 8
 const TipCornerPadding = TipSize
-const ScreenBorderPadding = 10
+export const PopoverScreenBorderPadding = 10
 
 interface IPopoverProps {
   readonly onClickOutside?: (event?: MouseEvent) => void
   readonly onMousedownOutside?: (event?: MouseEvent) => void
   /** Element to anchor the popover to */
   readonly anchor: HTMLElement | null
+  /** Offset to apply to the distance from the anchor */
+  readonly anchorOffset?: number
   /** The position of the popover relative to the anchor.  */
   readonly anchorPosition: PopoverAnchorPosition
+  /** Whether or not the popover behaves as a dialog. Optional. Default: true */
+  readonly isDialog?: boolean
   /**
    * The position of the tip or pointer of the popover relative to the side at
    * which the tip is presented. Optional. Default: Center
@@ -71,6 +76,7 @@ interface IPopoverProps {
   readonly style?: React.CSSProperties
   readonly appearEffect?: PopoverAppearEffect
   readonly ariaLabelledby?: string
+  readonly ariaDescribedBy?: string
   readonly trapFocus?: boolean // Default: true
   readonly decoration?: PopoverDecoration // Default: none
 
@@ -97,7 +103,7 @@ export class Popover extends React.Component<IPopoverProps, IPopoverState> {
     this.focusTrapOptions = {
       allowOutsideClick: true,
       escapeDeactivates: true,
-      onDeactivate: this.props.onClickOutside,
+      onDeactivate: this.props.onMousedownOutside ?? this.props.onClickOutside,
     }
 
     this.state = { position: null }
@@ -125,7 +131,7 @@ export class Popover extends React.Component<IPopoverProps, IPopoverState> {
   }
 
   private updatePosition = async () => {
-    const { anchor, decoration, maxHeight } = this.props
+    const { anchor, anchorOffset, decoration, maxHeight } = this.props
     const containerDiv = this.containerDivRef.current
     const contentDiv = this.contentDivRef.current
 
@@ -139,11 +145,13 @@ export class Popover extends React.Component<IPopoverProps, IPopoverState> {
     }
 
     const tipDiv = this.tipDivRef.current
+    const extraOffset = anchorOffset ?? 0
+    const popoverOffset = decoration === PopoverDecoration.Balloon ? TipSize : 0
 
     const middleware = [
-      offset(decoration === PopoverDecoration.Balloon ? TipSize : 0),
-      shift({ padding: ScreenBorderPadding }),
-      flip({ padding: ScreenBorderPadding }),
+      offset(popoverOffset + extraOffset),
+      shift({ padding: PopoverScreenBorderPadding }),
+      flip({ padding: PopoverScreenBorderPadding }),
       size({
         apply({ availableHeight, availableWidth }) {
           Object.assign(contentDiv.style, {
@@ -154,7 +162,7 @@ export class Popover extends React.Component<IPopoverProps, IPopoverState> {
             maxWidth: `${availableWidth}px`,
           })
         },
-        padding: ScreenBorderPadding,
+        padding: PopoverScreenBorderPadding,
       }),
     ]
 
@@ -193,6 +201,7 @@ export class Popover extends React.Component<IPopoverProps, IPopoverState> {
     const { target } = event
 
     if (
+      !event.defaultPrevented &&
       ref !== null &&
       ref.parentElement !== null &&
       target instanceof Node &&
@@ -208,6 +217,7 @@ export class Popover extends React.Component<IPopoverProps, IPopoverState> {
     const { target } = event
 
     if (
+      !event.defaultPrevented &&
       ref !== null &&
       ref.parentElement !== null &&
       target instanceof Node &&
@@ -218,16 +228,56 @@ export class Popover extends React.Component<IPopoverProps, IPopoverState> {
     }
   }
 
+  /**
+   * Gets the aria-labelledby or aria-describedby attribute
+   *
+   * The correct semantics are that a dialog element (which this is) should have
+   * an aria-labelledby for it's title.
+   *
+   * However, macOs VoiceOver is not reliable so we have some workarounds...
+   */
+  private getAriaAttributes() {
+    if (this.props.isDialog === false) {
+      return {}
+    }
+
+    if (isMacOSVentura()) {
+      /* macOs Ventura introduced a regression in that the aria-labelledby
+       * is not announced and if provided prevents the aria-describedby from being
+       * announced. Thus, this method will use aria-describedby instead of the
+       * aria-labelledby for macOs Ventura. This is not semantically correct tho,
+       * hopefully, macOs will be fixed in a future release. The issue is known for
+       * macOS versions 13.0 to the current version of 13.5 as of 2023-07-31. */
+      return {
+        'aria-describedby': `${this.props.ariaLabelledby} ${this.props.ariaDescribedBy}`,
+      }
+    }
+
+    if (isMacOSSonoma() || isMacOSSequoia()) {
+      // macOS Sonoma introduced a regression in that: For role of 'dialog', the
+      // aria-labelledby is not announced. However, if the dialog has a child
+      // with a role of header (aka h* elemeent) it will be announced as long as
+      // the aria-labelledby is not provided.
+      return {}
+    }
+
+    // correct semantics
+    return {
+      'aria-labelledby': this.props.ariaLabelledby,
+      'aria-describedby': this.props.ariaDescribedBy,
+    }
+  }
+
   public render() {
     const {
       trapFocus,
       className,
       appearEffect,
-      ariaLabelledby,
       children,
       decoration,
       maxHeight,
       minHeight,
+      isDialog,
     } = this.props
     const cn = classNames(
       decoration === PopoverDecoration.Balloon && 'popover-component',
@@ -242,6 +292,7 @@ export class Popover extends React.Component<IPopoverProps, IPopoverState> {
       position: 'fixed',
       zIndex: 17, // same as --foldout-z-index
       height: 'auto',
+      ...this.props.style,
     }
     const contentStyle: React.CSSProperties = {
       overflow: 'hidden',
@@ -292,8 +343,8 @@ export class Popover extends React.Component<IPopoverProps, IPopoverState> {
         className={cn}
         style={style}
         ref={this.containerDivRef}
-        aria-labelledby={ariaLabelledby}
-        role="dialog"
+        {...this.getAriaAttributes()}
+        role={isDialog === false ? undefined : 'dialog'}
       >
         <div
           className="popover-content"

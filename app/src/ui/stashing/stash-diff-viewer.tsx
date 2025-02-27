@@ -33,9 +33,6 @@ interface IStashDiffViewerProps {
   /** Whether we should display side by side diffs. */
   readonly showSideBySideDiff: boolean
 
-  /** Are there any uncommitted changes */
-  readonly isWorkingTreeClean: boolean
-
   /**
    * Called when the user requests to open a binary file in an the
    * system-assigned application for said file type.
@@ -61,6 +58,9 @@ interface IStashDiffViewerProps {
    */
   readonly onOpenInExternalEditor: (path: string) => void
 }
+
+/// Id of the stash diff viewer
+export const StashDiffViewerId = 'stash-diff-viewer'
 
 /**
  * Component to display a selected stash's file list and diffs
@@ -96,7 +96,6 @@ export class StashDiffViewer extends React.PureComponent<IStashDiffViewerProps> 
       repository,
       dispatcher,
       imageDiffType,
-      isWorkingTreeClean,
       fileListWidth,
       onOpenBinaryFile,
       onChangeImageDiffType,
@@ -113,6 +112,7 @@ export class StashDiffViewer extends React.PureComponent<IStashDiffViewerProps> 
           diff={stashedFileDiff}
           imageDiffType={imageDiffType}
           hideWhitespaceInDiff={false}
+          showDiffCheckMarks={false}
           showSideBySideDiff={this.props.showSideBySideDiff}
           onOpenBinaryFile={onOpenBinaryFile}
           onChangeImageDiffType={onChangeImageDiffType}
@@ -126,12 +126,11 @@ export class StashDiffViewer extends React.PureComponent<IStashDiffViewerProps> 
     const availableWidth = clamp(fileListWidth)
 
     return (
-      <section id="stash-diff-viewer">
+      <section id={StashDiffViewerId}>
         <StashDiffHeader
           stashEntry={stashEntry}
           repository={repository}
           dispatcher={dispatcher}
-          isWorkingTreeClean={isWorkingTreeClean}
           askForConfirmationOnDiscardStash={
             this.props.askForConfirmationOnDiscardStash
           }
@@ -143,6 +142,7 @@ export class StashDiffViewer extends React.PureComponent<IStashDiffViewerProps> 
             maximumWidth={fileListWidth.max}
             onResize={this.onResize}
             onReset={this.onReset}
+            description="Stash file list"
           >
             <FileList
               files={files}
